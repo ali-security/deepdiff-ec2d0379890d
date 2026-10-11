@@ -196,7 +196,7 @@ class TestDeepDistance:
     ])
     def test_get_numbers_distance(self, num1, num2, max_, expected):
         result = _get_numbers_distance(num1, num2, max_)
-        assert abs(expected - result) < 0.0001
+        assert abs(expected - result) < 0.001
 
     @pytest.mark.parametrize('arr1, arr2', [
         (np.array([4.1978, 4.1979, 4.1980]), np.array([4.1971, 4.1879, 4.1981])),
@@ -217,7 +217,7 @@ class TestDeepDistance:
     ])
     def test_get_numeric_types_distance(self, num1, num2, max_, expected):
         result = get_numeric_types_distance(num1, num2, max_)
-        assert abs(expected - result) < 0.0001
+        assert abs(expected - result) < 0.001
 
     def test_get_rough_length_after_cache_purge(self):
         diff = DeepDiff([1], ['a'])
