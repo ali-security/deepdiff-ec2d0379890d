@@ -7,7 +7,7 @@ from deepdiff.helper import (
     strings, short_repr, numbers,
     np_ndarray, np_array_factory, numpy_dtypes, get_doc,
     not_found, numpy_dtype_string_to_type, dict_)
-from deepdiff.path import _path_to_elements, _get_nested_obj, GET, GETATTR
+from deepdiff.path import _path_to_elements, _get_nested_obj, GET, GETATTR, check_elem
 from deepdiff.anyset import AnySet
 
 
@@ -153,6 +153,11 @@ class Delta:
                 path, expected_old_value, current_old_value, VERIFY_SYMMETRY_MSG))
 
     def _get_elem_and_compare_to_old_value(self, obj, path_for_err_reporting, expected_old_value, elem=None, action=None):
+        try:
+            check_elem(elem)
+        except ValueError as error:
+            self._raise_or_log(UNABLE_TO_GET_ITEM_MSG.format(path_for_err_reporting, error))
+            return not_found
         try:
             if action == GET:
                 current_old_value = obj[elem]
@@ -350,6 +355,7 @@ class Delta:
                 parent = parent_to_obj_elem = parent_to_obj_action = None
                 obj = _get_nested_obj(obj=self, elements=elements[:-1])
             elem, action = elements[-1]
+            check_elem(elem)
         except Exception as e:
             self._raise_or_log(UNABLE_TO_GET_ITEM_MSG.format(path, e))
             return None

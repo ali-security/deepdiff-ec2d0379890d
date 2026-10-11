@@ -102,8 +102,14 @@ def _path_to_elements(path, root_element=DEFAULT_FIRST_ELEMENT):
     return tuple(elements)
 
 
+def check_elem(elem):
+    if isinstance(elem, str) and elem.startswith("__") and elem.endswith("__"):
+        raise ValueError("traversing dunder attributes is not allowed")
+
+
 def _get_nested_obj(obj, elements):
     for (elem, action) in elements:
+        check_elem(elem)
         if action == GET:
             obj = obj[elem]
         elif action == GETATTR:

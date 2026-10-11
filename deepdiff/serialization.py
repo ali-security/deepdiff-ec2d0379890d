@@ -49,7 +49,7 @@ FORBIDDEN_MODULE_MSG = "Module '{}' is forbidden. You need to explicitly pass it
 DELTA_IGNORE_ORDER_NEEDS_REPETITION_REPORT = 'report_repetition must be set to True when ignore_order is True to create the delta object.'
 DELTA_ERROR_WHEN_GROUP_BY = 'Delta can not be made when group_by is used since the structure of data is modified from the original form.'
 
-SAFE_TO_IMPORT = {
+SAFE_TO_IMPORT = frozenset({
     'builtins.range',
     'builtins.complex',
     'builtins.set',
@@ -74,7 +74,7 @@ SAFE_TO_IMPORT = {
     'collections.OrderedDict',
     'deepdiff.helper.OrderedDictPlus',
     're.Pattern',
-}
+})
 
 
 class ModuleNotFoundError(ImportError):
