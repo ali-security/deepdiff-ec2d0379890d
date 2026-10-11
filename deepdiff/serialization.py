@@ -230,6 +230,35 @@ class SerializationMixin:
         return '\n'.join(result)
 
 
+# Maximum size allowed for integer arguments to constructors that allocate
+# memory proportional to the argument (e.g. bytes(n), bytearray(n)).
+# This prevents denial-of-service via crafted pickle payloads. (CVE-2026-33155)
+_MAX_ALLOC_SIZE = 128 * 1024 * 1024  # 128 MB
+
+# Callables where an integer argument directly controls memory allocation size.
+_SIZE_SENSITIVE_CALLABLES = frozenset({bytes, bytearray})
+
+
+class _SafeConstructor:
+    """Wraps a type constructor to prevent excessive memory allocation via the REDUCE opcode."""
+    __slots__ = ('_wrapped',)
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def __call__(self, *args, **kwargs):
+        for arg in args:
+            if isinstance(arg, int) and arg > _MAX_ALLOC_SIZE:
+                raise pickle.UnpicklingError(
+                    "Refusing to create {}() with size {}: "
+                    "exceeds the maximum allowed size of {} bytes. "
+                    "This could be a denial-of-service attack payload.".format(
+                        self._wrapped.__name__, arg, _MAX_ALLOC_SIZE
+                    )
+                )
+        return self._wrapped(*args, **kwargs)
+
+
 class _RestrictedUnpickler(pickle.Unpickler):
 
     def __init__(self, *args, **kwargs):
@@ -254,7 +283,11 @@ class _RestrictedUnpickler(pickle.Unpickler):
                 module_obj = sys.modules[module]
             except KeyError:
                 raise ModuleNotFoundError(MODULE_NOT_FOUND_MSG.format(module_dot_class)) from None
-            return getattr(module_obj, name)
+            cls = getattr(module_obj, name)
+            # Wrap size-sensitive callables to prevent DoS via large allocations
+            if cls in _SIZE_SENSITIVE_CALLABLES:
+                return _SafeConstructor(cls)
+            return cls
         # Forbid everything else.
         raise ForbiddenModule(FORBIDDEN_MODULE_MSG.format(module_dot_class)) from None
 

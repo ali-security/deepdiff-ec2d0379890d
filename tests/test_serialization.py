@@ -4,9 +4,11 @@ import json
 import sys
 import pytest
 import datetime
+from contextlib import contextmanager
 from pickle import UnpicklingError
 from decimal import Decimal
-from deepdiff import DeepDiff
+from deepdiff import DeepDiff, Delta
+from deepdiff.delta import DeltaError
 from deepdiff.helper import pypy3
 from deepdiff.serialization import (
     pickle_load, pickle_dump, ForbiddenModule, ModuleNotFoundError,
@@ -112,6 +114,135 @@ class TestLoadContet:
         path = os.path.join(FIXTURES_DIR, 't1.unsupported')
         with pytest.raises(UnsupportedFormatErr):
             load_path_content(path)
+
+
+class TestPicklingSecurity:
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Resource module is Unix-only")
+    def test_restricted_unpickler_memory_exhaustion_cve(self):
+        """CVE-2026-33155: Prevent DoS via massive allocation through REDUCE opcode.
+
+        The payload calls bytes(10_000_000_000) which is allowed by find_class
+        but would allocate ~9.3GB of memory. The fix should reject this before
+        the allocation happens.
+        """
+        import resource
+
+        # 1. Cap memory to 500MB to prevent system freezes during the test
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        maxsize_bytes = 500 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (maxsize_bytes, hard))
+
+        try:
+            # 2. Malicious payload: attempts to allocate ~9.3GB via bytes(10000000000)
+            # This uses allowed builtins but passes a massive integer via REDUCE
+            payload = (
+                b"(dp0\n"
+                b"S'_'\n"
+                b"cbuiltins\nbytes\n"
+                b"(I10000000000\n"
+                b"tR"
+                b"s."
+            )
+
+            # 3. After the patch, deepdiff should catch the size violation
+            # and raise UnpicklingError before attempting allocation.
+            with pytest.raises((ValueError, UnpicklingError)):
+                pickle_load(payload)
+        finally:
+            # Restore original memory limit so other tests are not affected
+            resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+
+    def test_restricted_unpickler_allows_small_bytes(self):
+        """Ensure legitimate small bytes objects can still be deserialized."""
+        # Payload: {'_': bytes(100)} — well within the 128MB limit
+        payload = (
+            b"(dp0\n"
+            b"S'_'\n"
+            b"cbuiltins\nbytes\n"
+            b"(I100\n"
+            b"tR"
+            b"s."
+        )
+        result = pickle_load(payload)
+        assert result == {'_': bytes(100)}
+
+    @staticmethod
+    @contextmanager
+    def _limit_memory(maxsize_bytes=500 * 1024 * 1024):
+        """Cap the address space so an unguarded allocation fails fast instead of freezing the system."""
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS, (maxsize_bytes, hard))
+        try:
+            yield
+        finally:
+            resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Resource module is Unix-only")
+    def test_restricted_unpickler_bytearray_memory_exhaustion_cve(self):
+        """CVE-2026-33155: bytearray(n) is size-sensitive too when it is allowed via safe_to_import."""
+        payload = (
+            b"(dp0\n"
+            b"S'_'\n"
+            b"cbuiltins\nbytearray\n"
+            b"(I10000000000\n"
+            b"tR"
+            b"s."
+        )
+        with self._limit_memory():
+            with pytest.raises(UnpicklingError, match='exceeds the maximum allowed size'):
+                pickle_load(payload, safe_to_import={'builtins.bytearray'})
+
+    def test_restricted_unpickler_allows_small_bytearray(self):
+        payload = (
+            b"(dp0\n"
+            b"S'_'\n"
+            b"cbuiltins\nbytearray\n"
+            b"(I100\n"
+            b"tR"
+            b"s."
+        )
+        result = pickle_load(payload, safe_to_import={'builtins.bytearray'})
+        assert result == {'_': bytearray(100)}
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Resource module is Unix-only")
+    def test_restricted_unpickler_newobj_memory_exhaustion_cve(self):
+        """CVE-2026-33155: bytes.__new__(bytes, 10_000_000_000) through the NEWOBJ opcode must not allocate."""
+        payload = (
+            b"\x80\x02"                       # PROTO 2
+            b"}"                              # EMPTY_DICT
+            b"X\x01\x00\x00\x00_"             # BINUNICODE '_'
+            b"cbuiltins\nbytes\n"             # GLOBAL builtins.bytes
+            b"\x8a\x05\x00\xe4\x0bT\x02"      # LONG1 10000000000
+            b"\x85"                           # TUPLE1
+            b"\x81"                           # NEWOBJ
+            b"s."                             # SETITEM, STOP
+        )
+        with self._limit_memory():
+            with pytest.raises((TypeError, UnpicklingError)):
+                pickle_load(payload)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Resource module is Unix-only")
+    def test_delta_type_change_memory_exhaustion_cve(self):
+        """CVE-2026-33155: a pickled delta must not turn a huge int into bytes via type_changes."""
+        payload = pickle_dump({
+            'values_changed': {"root['x']": {'new_value': 10000000000}},
+            'type_changes': {"root['x']": {'new_type': bytes}},
+        })
+        target = {'x': 'anything'}
+        with self._limit_memory():
+            delta = Delta(payload, raise_errors=True, log_errors=False)
+            with pytest.raises(DeltaError, match='exceeds the maximum allowed size'):
+                target + delta
+
+    def test_delta_type_change_to_small_bytes_still_works(self):
+        payload = pickle_dump({
+            'values_changed': {"root['x']": {'new_value': 100}},
+            'type_changes': {"root['x']": {'new_type': bytes}},
+        })
+        result = {'x': 'anything'} + Delta(payload, raise_errors=True)
+        assert result == {'x': bytes(100)}
 
 
 class TestPickling:
